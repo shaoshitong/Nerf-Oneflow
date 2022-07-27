@@ -1,0 +1,6 @@
+Log file created at: 2022/07/27 14:47:42
+Running on machine: sst-MS-7D18
+Running duration (h:mm:ss): 0:00:00
+Log line format: [IWEF]yyyymmdd hh:mm:ss.uuuuuu threadid file:line] msg
+I20220727 14:47:42.579682 1466884 env_global_objects_scope.cpp:146] Using rpc backend: local
+I20220727 14:47:42.637625 1466884 epoll_comm_network.cpp:63] CommNet:Epoll listening on 0.0.0.0:40315
