@@ -13,44 +13,49 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Optional
+import glob
+import json
+import os
+import re
+import sys
+
+import numpy as np
 import oneflow as flow
 from flowvision import datasets
-from oneflow.utils.data import Dataset
-import json
-import numpy as np
-import os, sys, re, glob
-from PIL import Image
 from flowvision import transforms as T
+from oneflow.utils.data import Dataset
+from PIL import Image
+
+from libai.config import LazyCall, instantiate
 from libai.data.structures import DistTensorData, Instance
 
 
 # TODO: Somw tools about the fpm storage, which is not necessarily used
 def read_pfm(filename):
-    file = open(filename, 'rb')
+    file = open(filename, "rb")
 
-    header = file.readline().decode('utf-8').rstrip()
-    if header == 'PF':
+    header = file.readline().decode("utf-8").rstrip()
+    if header == "PF":
         color = True
-    elif header == 'Pf':
+    elif header == "Pf":
         color = False
     else:
-        raise Exception('Not a PFM file.')
+        raise Exception("Not a PFM file.")
 
-    dim_match = re.match(r'^(\d+)\s(\d+)\s$', file.readline().decode('utf-8'))
+    dim_match = re.match(r"^(\d+)\s(\d+)\s$", file.readline().decode("utf-8"))
     if dim_match:
         width, height = map(int, dim_match.groups())
     else:
-        raise Exception('Malformed PFM header.')
+        raise Exception("Malformed PFM header.")
 
     scale = float(file.readline().rstrip())
     if scale < 0:  # little-endian
-        endian = '<'
+        endian = "<"
         scale = -scale
     else:
-        endian = '>'  # big-endian
+        endian = ">"  # big-endian
 
-    data = np.fromfile(file, endian + 'f')
+    data = np.fromfile(file, endian + "f")
     shape = (height, width, 3) if color else (height, width)
 
     data = np.reshape(data, shape)
@@ -63,25 +68,25 @@ def save_pfm(filename, image, scale=1):
     file = open(filename, "wb")
     image = np.flipud(image)
 
-    if image.dtype.name != 'float32':
-        raise Exception('Image dtype must be float32.')
+    if image.dtype.name != "float32":
+        raise Exception("Image dtype must be float32.")
 
     if len(image.shape) == 3 and image.shape[2] == 3:  # color image
         color = True
     elif len(image.shape) == 2 or len(image.shape) == 3 and image.shape[2] == 1:  # greyscale
         color = False
     else:
-        raise Exception('Image must have H x W x 3, H x W x 1 or H x W dimensions.')
+        raise Exception("Image must have H x W x 3, H x W x 1 or H x W dimensions.")
 
-    file.write('PF\n'.encode('utf-8') if color else 'Pf\n'.encode('utf-8'))
-    file.write('{} {}\n'.format(image.shape[1], image.shape[0]).encode('utf-8'))
+    file.write("PF\n".encode("utf-8") if color else "Pf\n".encode("utf-8"))
+    file.write("{} {}\n".format(image.shape[1], image.shape[0]).encode("utf-8"))
 
     endian = image.dtype.byteorder
 
-    if endian == '<' or endian == '=' and sys.byteorder == 'little':
+    if endian == "<" or endian == "=" and sys.byteorder == "little":
         scale = -scale
 
-    file.write(('%f\n' % scale).encode('utf-8'))
+    file.write(("%f\n" % scale).encode("utf-8"))
 
     image.tofile(file)
     file.close()
@@ -125,8 +130,9 @@ def get_ray_directions(H, W, focal):
     i, j = grid.unbind(-1)
     i = flow.tensor(i.numpy())
     j = flow.tensor(j.numpy())
-    directions = \
-        flow.stack([(i - W / 2) / focal, -(j - H / 2) / focal, -flow.ones_like(i)], -1)  # compute about tanx (H, W, 3)
+    directions = flow.stack(
+        [(i - W / 2) / focal, -(j - H / 2) / focal, -flow.ones_like(i)], -1
+    )  # compute about tanx (H, W, 3)
 
     return directions
 
@@ -162,14 +168,13 @@ def get_ndc_rays(H, W, focal, near, rays_o, rays_d):
     oy_oz = rays_o[..., 1] / rays_o[..., 2]
 
     # Projection
-    o0 = -1. / (W / (2. * focal)) * ox_oz
-    o1 = -1. / (H / (2. * focal)) * oy_oz
-    o2 = 1. + 2. * near / rays_o[..., 2]
+    o0 = -1.0 / (W / (2.0 * focal)) * ox_oz
+    o1 = -1.0 / (H / (2.0 * focal)) * oy_oz
+    o2 = 1.0 + 2.0 * near / rays_o[..., 2]
 
-    d0 = -1. / (W / (2. * focal)) * (rays_d[..., 0] / rays_d[..., 2] - ox_oz)
-    d1 = -1. / (H / (2. * focal)) * (rays_d[..., 1] / rays_d[..., 2] - oy_oz)
+    d0 = -1.0 / (W / (2.0 * focal)) * (rays_d[..., 0] / rays_d[..., 2] - ox_oz)
+    d1 = -1.0 / (H / (2.0 * focal)) * (rays_d[..., 1] / rays_d[..., 2] - oy_oz)
     d2 = 1 - o2
-
     rays_o = flow.stack([o0, o1, o2], -1)  # (B, 3)
     rays_d = flow.stack([d0, d1, d2], -1)  # (B, 3)
 
@@ -238,8 +243,7 @@ def center_poses(poses):
     pose_avg_homo[:3] = pose_avg  # convert to homogeneous coordinate for faster computation
     # by simply adding 0, 0, 0, 1 as the last row
     last_row = np.tile(np.array([0, 0, 0, 1]), (len(poses), 1, 1))  # (N_images, 1, 4)
-    poses_homo = \
-        np.concatenate([poses, last_row], 1)  # (N_images, 4, 4) homogeneous coordinate
+    poses_homo = np.concatenate([poses, last_row], 1)  # (N_images, 4, 4) homogeneous coordinate
 
     poses_centered = np.linalg.inv(pose_avg_homo) @ poses_homo  # (N_images, 4, 4)
     poses_centered = poses_centered[:, :3]  # (N_images, 3, 4)
@@ -293,26 +297,32 @@ def create_spheric_poses(radius, n_poses=120):
     """
 
     def spheric_pose(theta, phi, radius):
-        trans_t = lambda t: np.array([
-            [1, 0, 0, 0],
-            [0, 1, 0, -0.9 * t],
-            [0, 0, 1, t],
-            [0, 0, 0, 1],
-        ])
+        trans_t = lambda t: np.array(
+            [
+                [1, 0, 0, 0],
+                [0, 1, 0, -0.9 * t],
+                [0, 0, 1, t],
+                [0, 0, 0, 1],
+            ]
+        )
 
-        rot_phi = lambda phi: np.array([
-            [1, 0, 0, 0],
-            [0, np.cos(phi), -np.sin(phi), 0],
-            [0, np.sin(phi), np.cos(phi), 0],
-            [0, 0, 0, 1],
-        ])
+        rot_phi = lambda phi: np.array(
+            [
+                [1, 0, 0, 0],
+                [0, np.cos(phi), -np.sin(phi), 0],
+                [0, np.sin(phi), np.cos(phi), 0],
+                [0, 0, 0, 1],
+            ]
+        )
 
-        rot_theta = lambda th: np.array([
-            [np.cos(th), 0, -np.sin(th), 0],
-            [0, 1, 0, 0],
-            [np.sin(th), 0, np.cos(th), 0],
-            [0, 0, 0, 1],
-        ])
+        rot_theta = lambda th: np.array(
+            [
+                [np.cos(th), 0, -np.sin(th), 0],
+                [0, 1, 0, 0],
+                [np.sin(th), 0, np.cos(th), 0],
+                [0, 0, 0, 1],
+            ]
+        )
 
         c2w = rot_theta(theta) @ rot_phi(phi) @ trans_t(radius)
         c2w = np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]]) @ c2w
@@ -323,44 +333,56 @@ def create_spheric_poses(radius, n_poses=120):
         spheric_poses += [spheric_pose(th, -np.pi / 5, radius)]  # 36 degree view downwards
     return np.stack(spheric_poses, 0)
 
+
 # TODO: Blender and LLFF Datasets
+
+
+def trun_dict_to_instance(dict):
+    return Instance(**{key: DistTensorData(flow.tensor(value)) for key, value in dict.items()})
+
 
 class NerfBaseDataset(Dataset):
     def __init__(self, root_dir, split, img_wh):
         super(NerfBaseDataset, self).__init__()
-        self.root_dir=root_dir
-        self.split=split
-        assert img_wh[0] == img_wh[1], 'image width must equal image height!'
-        self.img_wh=img_wh
+        self.root_dir = root_dir
+        self.split = split
+        self.img_wh = img_wh
         self.transform = T.Compose([T.ToTensor()])
 
     def load_meta(self):
         pass
 
+
 class BlenderDataset(NerfBaseDataset):
-    def __init__(self, root_dir, split, img_wh=(800, 800)):
-        super(BlenderDataset, self).__init__(root_dir,split,img_wh)
+    def __init__(self, root_dir, split="train", img_wh=(800, 800), **kwargs):
+        """
+        Args:
+            root_dir: str,
+            split: str,
+            img_wh: tuple,
+        """
+        super(BlenderDataset, self).__init__(root_dir, split, img_wh)
         self.white_back = True
         self.load_meta()
 
     def load_meta(self):
-        with open(os.path.join(self.root_dir, f"transforms_{self.split}.json"), 'r') as f:
+        with open(os.path.join(self.root_dir, f"transforms_{self.split}.json"), "r") as f:
             self.meta = json.load(f)
         w, h = self.img_wh
-        camera_angle_x = float(self.meta['camera_angle_x'])
+        camera_angle_x = float(self.meta["camera_angle_x"])
         self.focal = 0.5 * w / np.tan(0.5 * camera_angle_x)
         self.near = 2.0
         self.far = 6.0
         self.bounds = np.array([self.near, self.far])
         self.directions = get_ray_directions(h, w, self.focal)  # (h, w, 3)
 
-        if self.split == 'train':  # create buffer of all rays and rgb data
+        if self.split == "train":  # create buffer of all rays and rgb data
             self.image_paths = []
             self.poses = []
             self.all_rays = []
             self.all_rgbs = []
-            for frame in self.meta['frames']:
-                pose = np.array(frame['transform_matrix'])[:3, :4]
+            for frame in self.meta["frames"]:
+                pose = np.array(frame["transform_matrix"])[:3, :4]
                 self.poses += [pose]
                 c2w = flow.Tensor(pose)
                 image_path = os.path.join(self.root_dir, f"{frame['file_path']}.png")
@@ -372,29 +394,35 @@ class BlenderDataset(NerfBaseDataset):
                 img = img[:, :3] * img[:, -1:] + (1 - img[:, -1:])  # blend A to RGB
                 self.all_rgbs += [img]
                 rays_o, rays_d = get_rays(self.directions, c2w)  # both (h*w, 3)
-                self.all_rays += [flow.cat([rays_o, rays_d,
-                                            self.near * flow.ones_like(rays_o[:, :1]),
-                                            self.far * flow.ones_like(rays_o[:, :1])],
-                                           1)]  # (h*w, 8)
+                self.all_rays += [
+                    flow.cat(
+                        [
+                            rays_o,
+                            rays_d,
+                            self.near * flow.ones_like(rays_o[:, :1]),
+                            self.far * flow.ones_like(rays_o[:, :1]),
+                        ],
+                        1,
+                    )
+                ]  # (h*w, 8)
 
             self.all_rays = flow.cat(self.all_rays, 0)  # (len(self.meta['frames])*h*w, 3)
             self.all_rgbs = flow.cat(self.all_rgbs, 0)  # (len(self.meta['frames])*h*w, 3)
 
     def __len__(self):
-        if self.split == 'train':
+        if self.split == "train":
             return len(self.all_rays)
-        if self.split == 'val':
+        if self.split == "val":
             return 8  # only validate 8 images (to support <=8 gpus)
-        return len(self.meta['frames'])
+        return len(self.meta["frames"])
 
     def __getitem__(self, idx):
-        if self.split == 'train':  # use data in the buffers
-            sample = {'rays': self.all_rays[idx],
-                      'rgbs': self.all_rgbs[idx]}
+        if self.split == "train":  # use data in the buffers
+            sample = {"rays": self.all_rays[idx], "rgbs": self.all_rgbs[idx]}
 
         else:  # create data for each image separately
-            frame = self.meta['frames'][idx]
-            c2w = flow.Tensor(frame['transform_matrix'])[:3, :4]
+            frame = self.meta["frames"][idx]
+            c2w = flow.Tensor(frame["transform_matrix"])[:3, :4]
 
             img = Image.open(os.path.join(self.root_dir, f"{frame['file_path']}.png"))
             img = img.resize(self.img_wh, Image.LANCZOS)
@@ -405,44 +433,53 @@ class BlenderDataset(NerfBaseDataset):
 
             rays_o, rays_d = get_rays(self.directions, c2w)
 
-            rays = flow.concat([rays_o, rays_d,
-                                self.near * flow.ones_like(rays_o[:, :1]),
-                                self.far * flow.ones_like(rays_o[:, :1])],
-                               1)  # (H*W, 8)
+            rays = flow.concat(
+                [
+                    rays_o,
+                    rays_d,
+                    self.near * flow.ones_like(rays_o[:, :1]),
+                    self.far * flow.ones_like(rays_o[:, :1]),
+                ],
+                1,
+            )  # (H*W, 8)
 
-            sample = {'rays': rays,
-                      'rgbs': img,
-                      'c2w': c2w,
-                      'valid_mask': valid_mask}
+            sample = {"rays": rays, "rgbs": img, "c2w": c2w, "valid_mask": valid_mask}
 
-        return sample
+        return trun_dict_to_instance(sample)
 
 
 class LLFFDataset(NerfBaseDataset):
-    def __init__(self, root_dir, split='train', img_wh=(504, 378), spheric_poses=False, val_num=1):
-        super(LLFFDataset, self).__init__(root_dir,split,img_wh)
+    def __init__(self, root_dir, split="train", img_wh=(504, 378), spheric_poses=False, val_num=1):
         """
-        spheric_poses: whether the images are taken in a spheric inward-facing manner
+        Args:
+            root_dir: str,
+            split: str,
+            img_wh: tuple,
+            spheric_poses: bool, whether the images are taken in a spheric inward-facing manner
                        default: False (forward-facing)
-        val_num: number of val images (used for multigpu training, validate same image for all gpus)
+            val_num: int, number of val images (used for multigpu training, validate same image
+                    for all gpus)
         """
+        super(LLFFDataset, self).__init__(root_dir, split, img_wh)
         self.spheric_poses = spheric_poses
-        self.val_num = max(1, val_num) # at least 1
+        self.val_num = max(1, val_num)  # at least 1
         self.load_meta()
         self.white_back = False
 
     def load_meta(self):
-        poses_bounds = np.load(os.path.join(self.root_dir,
-                                            'poses_bounds.npy'))  # (N_images, 17)
-        self.image_paths = sorted(glob.glob(os.path.join(self.root_dir, 'images/*')))
-        if self.split in ['train', 'val']:
-            assert len(poses_bounds) == len(self.image_paths), \
-                'Mismatch between number of images and number of poses! Please rerun COLMAP!'
+        poses_bounds = np.load(os.path.join(self.root_dir, "poses_bounds.npy"))  # (N_images, 17)
+        self.image_paths = sorted(glob.glob(os.path.join(self.root_dir, "images/*")))
+        if self.split in ["train", "val"]:
+            assert len(poses_bounds) == len(
+                self.image_paths
+            ), "Mismatch between number of images and number of poses! Please rerun COLMAP!"
         poses = poses_bounds[:, :15].reshape(-1, 3, 5)  # (N_images, 3, 5)
         self.bounds = poses_bounds[:, -2:]  # (N_images, 2)
         H, W, self.focal = poses[0, :, -1]  # original intrinsics, same for all images
-        assert H * self.img_wh[0] == W * self.img_wh[1], \
-            f'You must set @img_wh to have the same aspect ratio as ({W}, {H}) !'
+        H, W, self.focal = H.item(), W.item(), self.focal.item()
+        assert (
+            H * self.img_wh[0] == W * self.img_wh[1]
+        ), f"You must set @img_wh to have the same aspect ratio as ({W}, {H}) !"
         self.focal *= self.img_wh[0] / W
         poses = np.concatenate([poses[..., 1:2], -poses[..., :1], poses[..., 2:4]], -1)
         # (N_images, 3, 4) exclude H, W, focal
@@ -453,10 +490,11 @@ class LLFFDataset(NerfBaseDataset):
         scale_factor = near_original * 0.75  # 0.75 is the default parameter
         self.bounds /= scale_factor
         self.poses[..., 3] /= scale_factor
-        self.directions = \
-            get_ray_directions(self.img_wh[1], self.img_wh[0], self.focal)  # (H, W, 3)
+        self.directions = get_ray_directions(
+            self.img_wh[1], self.img_wh[0], self.focal
+        )  # (H, W, 3)
 
-        if self.split == 'train':  # create buffer of all rays and rgb data
+        if self.split == "train":  # create buffer of all rays and rgb data
             # use first N_images-1 to train, the LAST is val
             self.all_rays = []
             self.all_rgbs = []
@@ -464,10 +502,11 @@ class LLFFDataset(NerfBaseDataset):
                 if i == val_idx:  # exclude the val image
                     continue
                 c2w = flow.Tensor(self.poses[i])
-                img = Image.open(image_path).convert('RGB')
-                assert img.size[1] * self.img_wh[0] == img.size[0] * self.img_wh[1], \
-                    f'''{image_path} has different aspect ratio than img_wh, 
-                        please check your data!'''
+                img = Image.open(image_path).convert("RGB")
+                assert (
+                    img.size[1] * self.img_wh[0] == img.size[0] * self.img_wh[1]
+                ), f"""{image_path} has different aspect ratio than img_wh, 
+                        please check your data!"""
                 img = img.resize(self.img_wh, Image.LANCZOS)
                 img = self.transform(img)  # (3, h, w)
                 img = img.view(3, -1).permute(1, 0)  # (h*w, 3) RGB
@@ -476,27 +515,35 @@ class LLFFDataset(NerfBaseDataset):
                 rays_o, rays_d = get_rays(self.directions, c2w)  # both (h*w, 3)
                 if not self.spheric_poses:
                     near, far = 0, 1
-                    rays_o, rays_d = get_ndc_rays(self.img_wh[1], self.img_wh[0],
-                                                  self.focal, 1.0, rays_o, rays_d)
+                    rays_o, rays_d = get_ndc_rays(
+                        self.img_wh[1], self.img_wh[0], self.focal, 1.0, rays_o, rays_d
+                    )
                 else:
                     near = self.bounds.min()
                     far = min(8 * near, self.bounds.max())  # focus on central object only
 
-                self.all_rays += [flow.concat([rays_o, rays_d,
-                                             near * flow.ones_like(rays_o[:, :1]),
-                                             far * flow.ones_like(rays_o[:, :1])],
-                                            1)]  # (h*w, 8)
+                self.all_rays += [
+                    flow.concat(
+                        [
+                            rays_o,
+                            rays_d,
+                            near * flow.ones_like(rays_o[:, :1]),
+                            far * flow.ones_like(rays_o[:, :1]),
+                        ],
+                        1,
+                    )
+                ]  # (h*w, 8)
 
             self.all_rays = flow.cat(self.all_rays, 0)  # ((N_images-1)*h*w, 8)
             self.all_rgbs = flow.cat(self.all_rgbs, 0)  # ((N_images-1)*h*w, 3)
 
-        elif self.split == 'val':
-            print('val image is', self.image_paths[val_idx])
+        elif self.split == "val":
+            print("val image is", self.image_paths[val_idx])
             self.c2w_val = self.poses[val_idx]
             self.image_path_val = self.image_paths[val_idx]
 
         else:  # for testing, create a parametric rendering path
-            if self.split.endswith('train'):  # test on training set
+            if self.split.endswith("train"):  # test on training set
                 self.poses_test = self.poses
             elif not self.spheric_poses:
                 focus_depth = 3.5  # hardcoded, this is numerically close to the formula
@@ -509,19 +556,18 @@ class LLFFDataset(NerfBaseDataset):
                 self.poses_test = create_spheric_poses(radius)
 
     def __len__(self):
-        if self.split == 'train':
+        if self.split == "train":
             return len(self.all_rays)
-        if self.split == 'val':
+        if self.split == "val":
             return self.val_num
         return len(self.poses_test)
 
     def __getitem__(self, idx):
-        if self.split == 'train': # use data in the buffers
-            sample = {'rays': self.all_rays[idx],
-                      'rgbs': self.all_rgbs[idx]}
+        if self.split == "train":  # use data in the buffers
+            sample = {"rays": self.all_rays[idx], "rgbs": self.all_rgbs[idx]}
 
         else:
-            if self.split == 'val':
+            if self.split == "val":
                 c2w = flow.Tensor(self.c2w_val)
             else:
                 c2w = flow.Tensor(self.poses_test[idx])
@@ -529,31 +575,57 @@ class LLFFDataset(NerfBaseDataset):
             rays_o, rays_d = get_rays(self.directions, c2w)
             if not self.spheric_poses:
                 near, far = 0, 1
-                rays_o, rays_d = get_ndc_rays(self.img_wh[1], self.img_wh[0],
-                                              self.focal, 1.0, rays_o, rays_d)
+                rays_o, rays_d = get_ndc_rays(
+                    self.img_wh[1], self.img_wh[0], self.focal, 1.0, rays_o, rays_d
+                )
             else:
                 near = self.bounds.min()
                 far = min(8 * near, self.bounds.max())
 
-            rays = flow.cat([rays_o, rays_d,
-                              near*flow.ones_like(rays_o[:, :1]),
-                              far*flow.ones_like(rays_o[:, :1])],
-                              1) # (h*w, 8)
+            rays = flow.cat(
+                [
+                    rays_o,
+                    rays_d,
+                    near * flow.ones_like(rays_o[:, :1]),
+                    far * flow.ones_like(rays_o[:, :1]),
+                ],
+                1,
+            )  # (h*w, 8)
 
-            sample = {'rays': rays,
-                      'c2w': c2w}
+            sample = {"rays": rays, "c2w": c2w}
 
-            if self.split == 'val':
-                img = Image.open(self.image_path_val).convert('RGB')
+            if self.split == "val":
+                img = Image.open(self.image_path_val).convert("RGB")
                 img = img.resize(self.img_wh, Image.LANCZOS)
-                img = self.transform(img) # (3, h, w)
-                img = img.view(3, -1).permute(1, 0) # (h*w, 3)
-                sample['rgbs'] = img
+                img = self.transform(img)  # (3, h, w)
+                img = img.view(3, -1).permute(1, 0)  # (h*w, 3)
+                sample["rgbs"] = img
 
-        return sample
+        return trun_dict_to_instance(sample)
 
 
-if __name__=="__main__":
-    dataset=BlenderDataset(root_dir="/home/Bigdata/Nerf/nerf_synthetic/chair/",split='train',img_wh=(400,400))
-    for img in dataset:
-        print(img['rays'].shape)
+# TODO: Create a unified interface to Nerf datasets
+
+
+def get_nerf_dataset(dataset_type="Blender"):
+    """
+    Args:
+        dataset_type: Blender or LLFF
+    """
+    assert dataset_type in ["Blender", "LLFF"], "The Nerf dataset must be one of Blender and LLFF"
+    if dataset_type == "Blender":
+        return BlenderDataset
+    else:
+        return LLFFDataset
+
+
+# if __name__=="__main__":
+# dataset=BlenderDataset(root_dir="/home/Bigdata/Nerf/nerf_synthetic/chair",split='train')
+# for img in dataset:
+#     print(img['rgbs'].shape)
+
+# dataset=LLFFDataset(root_dir="/home/Bigdata/Nerf/nerf_llff_data/fern")
+# dataset=instantiate(dataset)
+# for img in dataset:
+#     img=img.get_fields()
+#     print(img)
